@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
-import { MOCK_COMMITMENTS } from '../data/mockCommitments';
+import { useAllChallenges } from '../hooks/useCommitPool';
+import { challengeToCommitment } from '../utils/challenge';
 import { CommitmentCard } from '../components/CommitmentCard';
 import { Badge } from '../components/Badge';
 import { inputStyle } from '../components/FormField';
@@ -16,8 +17,13 @@ export function ExploreCommitments({ onNavigate }: Props) {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterStatus>('all');
 
-  // MOCK DATA — replace with useReadContract when contract is live
-  const commitments = MOCK_COMMITMENTS;
+  // LIVE DATA — every commitment is read from the deployed CommitPool contract
+  const { data: chainChallenges, isLoading, isError, error, refetch } = useAllChallenges();
+
+  const commitments = useMemo(
+    () => (chainChallenges ?? []).map(challengeToCommitment).reverse(),
+    [chainChallenges],
+  );
 
   const filtered = useMemo(() => {
     return commitments.filter((c) => {
@@ -40,16 +46,43 @@ export function ExploreCommitments({ onNavigate }: Props) {
 
         {/* Page header */}
         <div style={{ marginBottom: 'var(--space-10)' }}>
-          <Badge variant="accent" style={{ marginBottom: 'var(--space-3)' }}>
-            Mock Data
+          <Badge variant="success" style={{ marginBottom: 'var(--space-3)' }}>
+            Live · Monad Testnet
           </Badge>
           <h1 style={{ fontSize: 'clamp(1.75rem, 4vw, 2.5rem)', marginBottom: 'var(--space-2)' }}>
             Explore Commitments
           </h1>
           <p style={{ fontSize: '15px' }}>
-            {activeCount} active commitment{activeCount !== 1 ? 's' : ''} on Monad Testnet.
+            {isLoading
+              ? 'Reading commitments from the CommitPool contract…'
+              : isError
+              ? 'Failed to read commitments from the contract.'
+              : `${activeCount} active commitment${activeCount !== 1 ? 's' : ''} on Monad Testnet.`}
           </p>
         </div>
+
+        {/* Loading / error states */}
+        {isLoading && (
+          <div style={{ textAlign: 'center', padding: 'var(--space-20) 0', color: 'var(--text-muted)', fontSize: '14px' }}>
+            ◌ Loading from chain…
+          </div>
+        )}
+        {isError && (
+          <div style={{ textAlign: 'center', padding: 'var(--space-20) 0' }}>
+            <p style={{ fontSize: '14px', color: 'var(--danger)', marginBottom: 'var(--space-4)' }}>
+              {error instanceof Error ? error.message : 'Could not reach Monad Testnet.'}
+            </p>
+            <button
+              onClick={() => refetch()}
+              style={{
+                fontSize: '14px', color: 'var(--accent)', background: 'none',
+                border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', padding: 0,
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
         {/* Search + filter row */}
         <div
@@ -115,7 +148,7 @@ export function ExploreCommitments({ onNavigate }: Props) {
         </div>
 
         {/* Grid */}
-        {filtered.length > 0 ? (
+        {!isLoading && !isError && filtered.length > 0 && (
           <div
             style={{
               display: 'grid',
@@ -131,15 +164,24 @@ export function ExploreCommitments({ onNavigate }: Props) {
               />
             ))}
           </div>
-        ) : (
-          <EmptyState query={search} onClear={() => { setSearch(''); setFilter('all'); }} />
+        )}
+        {!isLoading && !isError && filtered.length === 0 && (
+          <EmptyState query={search} isEmptyOnChain={commitments.length === 0} onClear={() => { setSearch(''); setFilter('all'); }} />
         )}
       </div>
     </main>
   );
 }
 
-function EmptyState({ query, onClear }: { query: string; onClear: () => void }) {
+function EmptyState({
+  query,
+  isEmptyOnChain,
+  onClear,
+}: {
+  query: string;
+  isEmptyOnChain: boolean;
+  onClear: () => void;
+}) {
   return (
     <div
       style={{
@@ -153,10 +195,14 @@ function EmptyState({ query, onClear }: { query: string; onClear: () => void }) 
     >
       <span style={{ fontSize: '32px' }} aria-hidden="true">◌</span>
       <h3 style={{ fontSize: '18px', fontWeight: 600 }}>
-        {query ? `No results for "${query}"` : 'No commitments found'}
+        {query ? `No results for "${query}"` : isEmptyOnChain ? 'No commitments on-chain yet' : 'No commitments found'}
       </h3>
-      <p style={{ fontSize: '14px', maxWidth: '300px' }}>
-        {query ? 'Try a different search term or clear the filter.' : 'Check back soon.'}
+      <p style={{ fontSize: '14px', maxWidth: '320px', color: 'var(--text-secondary)' }}>
+        {query
+          ? 'Try a different search term or clear the filter.'
+          : isEmptyOnChain
+          ? 'The CommitPool contract has no challenges yet — create the first one.'
+          : 'Check back soon.'}
       </p>
       {query && (
         <button
@@ -177,5 +223,3 @@ function EmptyState({ query, onClear }: { query: string; onClear: () => void }) 
     </div>
   );
 }
-
-// (formatTimeRemaining is used internally via CommitmentCard)

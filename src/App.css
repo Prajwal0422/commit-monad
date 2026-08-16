@@ -14,8 +14,17 @@
   grid-template-columns: minmax(0, 1fr) 320px;
 }
 
+/* Landing roadmap: wider card + timeline, single column on mobile */
+.roadmap-grid {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+}
+
 @media (max-width: 768px) {
   .create-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .roadmap-grid {
     grid-template-columns: 1fr;
   }
 }

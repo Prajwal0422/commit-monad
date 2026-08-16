@@ -1,7 +1,6 @@
 // ─── Commitment domain types ──────────────────────────────────────────────────
-// These types describe the shape of data the smart contract will return.
-// When contract integration lands, replace mock data sources with wagmi
-// useReadContract calls that map on-chain data to these same types.
+// View-model types used by the UI. On-chain CommitPool data (bigint / wei /
+// unix seconds) is mapped into these shapes by src/utils/challenge.ts.
 
 export type CommitmentStatus = 'active' | 'pending_resolution' | 'resolved' | 'cancelled';
 export type ParticipantStatus = 'pending' | 'success' | 'failure';

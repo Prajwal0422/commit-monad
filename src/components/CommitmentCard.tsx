@@ -2,7 +2,7 @@ import { Card } from './Card';
 import { Badge } from './Badge';
 import { Button } from './Button';
 import type { Commitment } from '../types/commitment';
-import { formatTimeRemaining } from '../data/mockCommitments';
+import { formatTimeRemaining } from '../utils/challenge';
 
 const CATEGORY_COLORS: Record<string, string> = {
   Fitness:     'var(--success)',

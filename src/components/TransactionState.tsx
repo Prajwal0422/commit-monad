@@ -1,4 +1,3 @@
-import React from 'react';
 import { Badge } from './Badge';
 import { Button } from './Button';
 
@@ -8,12 +7,11 @@ interface TransactionStateProps {
   status: TxStatus;
   title?: string;
   description?: string;
-  // Will be wired to a real tx hash when contract integration lands
+  // Real transaction hash once the wallet has accepted the request
   transactionHash?: string;
   explorerUrl?: string;
   onDismiss?: () => void;
   onRetry?: () => void;
-  isMock?: boolean;   // shows "Demo Mode" label — remove when contract is live
 }
 
 const STATUS_CONFIG: Record<TxStatus, { label: string; icon: string; color: string }> = {
@@ -33,7 +31,6 @@ export function TransactionState({
   explorerUrl,
   onDismiss,
   onRetry,
-  isMock = false,
 }: TransactionStateProps) {
   if (status === 'idle') return null;
 
@@ -100,24 +97,6 @@ export function TransactionState({
         <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0, maxWidth: '320px' }}>
           {description}
         </p>
-      )}
-
-      {/* Mock disclaimer */}
-      {isMock && (
-        <div
-          style={{
-            padding: '6px 12px',
-            background: 'var(--warning-dim)',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: '11px',
-            fontWeight: 600,
-            color: 'var(--warning)',
-            letterSpacing: '0.04em',
-            textTransform: 'uppercase',
-          }}
-        >
-          Demo Mode — No real transaction
-        </div>
       )}
 
       {/* Transaction hash — shown when real hash is available */}

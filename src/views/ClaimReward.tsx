@@ -1,11 +1,17 @@
-import { useState } from 'react';
 import { useAccount } from 'wagmi';
-import { getCommitmentById } from '../data/mockCommitments';
 import { Card } from '../components/Card';
 import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
 import { TransactionState } from '../components/TransactionState';
-import type { TxStatus } from '../components/TransactionState';
+import {
+  useChallenge,
+  useParticipant,
+  useChallengeParticipants,
+  useCommitPoolTransaction,
+} from '../hooks/useCommitPool';
+import { parseChallengeId, countResults } from '../utils/challenge';
+import { formatMon } from '../utils/contract';
+import { ChallengeStatus, ParticipantResult } from '../contracts/CommitPool';
 import type { AppView } from '../App';
 
 interface Props {
@@ -15,48 +21,117 @@ interface Props {
 }
 
 export function ClaimReward({ commitmentId, onNavigate, onBack }: Props) {
-  const { address } = useAccount();
-  const commitment = getCommitmentById(commitmentId) ?? getCommitmentById('commit-resolved');
+  const { address, isConnected } = useAccount();
+  const challengeId = parseChallengeId(commitmentId);
 
-  const [txStatus, setTxStatus] = useState<TxStatus>('idle');
+  // ── Real contract reads ────────────────────────────────────────────────────
+  const { challenge, isLoading } = useChallenge(challengeId);
+  const { participant: myRecord } = useParticipant(challengeId, address);
+  const { data: records } = useChallengeParticipants(challengeId, challenge?.participantList);
 
-  if (!commitment) {
+  // ── Real claim transaction ─────────────────────────────────────────────────
+  const tx = useCommitPoolTransaction();
+
+  if (!challengeId || (!isLoading && !challenge)) {
     return (
       <main style={{ padding: 'var(--space-10) 0' }}>
         <div className="container">
           <BackButton onClick={onBack} />
-          <p style={{ color: 'var(--text-muted)' }}>Commitment not found.</p>
+          <p style={{ color: 'var(--text-muted)' }}>Commitment not found on-chain.</p>
         </div>
       </main>
     );
   }
 
-  // Determine if connected wallet is a winner
-  // MOCK ONLY — replace with contract read when live
-  const connectedParticipant = address
-    ? commitment.participants.find(
-        (p) => p.address.toLowerCase() === address.toLowerCase()
-      )
-    : null;
-
-  // Default to showing success state for demo purposes when no wallet matched
-  const participantStatus = connectedParticipant?.status ?? 'success';
-  const isWinner = participantStatus === 'success';
-
-  const stake = commitment.stakePerParticipant;
-  const successCount = commitment.successCount ?? 2;
-  const failureCount = commitment.failureCount ?? 1;
-  const failedPool = failureCount * stake;
-  const rewardBonus = successCount > 0 ? failedPool / successCount : 0;
-  const totalPayout = isWinner ? stake + rewardBonus : 0;
-
-  // MOCK claim — replace with useWriteContract when live
-  function handleClaim() {
-    setTxStatus('preparing');
-    setTimeout(() => setTxStatus('confirming'), 900);
-    setTimeout(() => setTxStatus('pending'), 1800);
-    setTimeout(() => setTxStatus('success'), 3200);
+  if (isLoading || !challenge) {
+    return (
+      <main style={{ padding: 'var(--space-10) 0' }}>
+        <div className="container">
+          <BackButton onClick={onBack} />
+          <p style={{ color: 'var(--text-muted)' }}>◌ Reading commitment from Monad Testnet…</p>
+        </div>
+      </main>
+    );
   }
+
+  const isResolved = challenge.status === ChallengeStatus.Resolved;
+  const { successCount, failureCount } = countResults(records ?? {});
+  const stake = challenge.stakeAmount;
+  const failedPool = BigInt(failureCount) * stake;
+  // Contract payout logic (claimReward):
+  //   - with winners:   payout = stake + failedPool / successCount (SUCCESS only)
+  //   - without winners: every participant reclaims their original stake
+  const hasWinners = successCount > 0;
+  const payout = hasWinners ? stake + failedPool / BigInt(successCount) : stake;
+
+  // Eligibility is read straight from the contract — never faked
+  const myResult = myRecord?.result ?? ParticipantResult.Pending;
+  const hasJoined = !!myRecord?.hasJoined;
+  const hasClaimed = !!myRecord?.hasClaimed;
+  const isWinner = myResult === ParticipantResult.Success;
+  const isEligible = isConnected && hasJoined && !hasClaimed && (hasWinners ? isWinner : true);
+
+  function handleClaim() {
+    if (!challengeId) return;
+    void tx.send({ functionName: 'claimReward', args: [challengeId] });
+  }
+
+  // ── Guard states ───────────────────────────────────────────────────────────
+  if (!isResolved) {
+    return (
+      <main style={{ padding: 'var(--space-10) 0 var(--space-20)' }}>
+        <div className="container" style={{ maxWidth: '560px' }}>
+          <BackButton onClick={onBack} />
+          <Card style={{ textAlign: 'center' }}>
+            <h2 style={{ fontSize: '1.2rem', marginBottom: 'var(--space-3)' }}>Not resolved yet</h2>
+            <p style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: 'var(--space-5)' }}>
+              Rewards can only be claimed after the commitment has been resolved on-chain.
+            </p>
+            <Button variant="secondary" onClick={() => onNavigate('resolution', commitmentId)}>
+              Go to Resolution →
+            </Button>
+          </Card>
+        </div>
+      </main>
+    );
+  }
+
+  if (!isConnected) {
+    return (
+      <main style={{ padding: 'var(--space-10) 0 var(--space-20)' }}>
+        <div className="container" style={{ maxWidth: '560px' }}>
+          <BackButton onClick={onBack} />
+          <Card style={{ textAlign: 'center' }}>
+            <h2 style={{ fontSize: '1.2rem', marginBottom: 'var(--space-3)' }}>Connect your wallet</h2>
+            <p style={{ fontSize: '14px', color: 'var(--text-secondary)', margin: 0 }}>
+              Connect the wallet you participated with to check your claim eligibility.
+            </p>
+          </Card>
+        </div>
+      </main>
+    );
+  }
+
+  if (!hasJoined) {
+    return (
+      <main style={{ padding: 'var(--space-10) 0 var(--space-20)' }}>
+        <div className="container" style={{ maxWidth: '560px' }}>
+          <BackButton onClick={onBack} />
+          <Card style={{ textAlign: 'center' }}>
+            <h2 style={{ fontSize: '1.2rem', marginBottom: 'var(--space-3)' }}>Not a participant</h2>
+            <p style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: 'var(--space-5)' }}>
+              The connected wallet did not join this commitment, so there is nothing to claim.
+            </p>
+            <Button variant="secondary" onClick={() => onNavigate('details', commitmentId)}>
+              Back to commitment
+            </Button>
+          </Card>
+        </div>
+      </main>
+    );
+  }
+
+  const claimable = isEligible && !hasClaimed;
 
   return (
     <main style={{ padding: 'var(--space-10) 0 var(--space-20)' }}>
@@ -66,36 +141,42 @@ export function ClaimReward({ commitmentId, onNavigate, onBack }: Props) {
         {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 'var(--space-8)' }}>
           <Badge
-            variant={isWinner ? 'success' : 'danger'}
+            variant={claimable ? 'success' : hasClaimed ? 'default' : 'danger'}
             style={{ marginBottom: 'var(--space-4)' }}
           >
-            {isWinner ? 'Winner' : 'Failed'} · Mock
+            {hasClaimed ? 'Already claimed' : claimable ? (hasWinners ? 'Winner' : 'Stake return') : 'Failed'}
           </Badge>
           <h1 style={{ fontSize: 'clamp(1.5rem, 3vw, 2rem)', marginBottom: 'var(--space-2)' }}>
-            {isWinner ? 'Claim your reward' : 'Better luck next time'}
+            {hasClaimed ? 'Reward already claimed' :
+             claimable ? (hasWinners ? 'Claim your reward' : 'Reclaim your stake') :
+             'Better luck next time'}
           </h1>
           <p style={{ fontSize: '14px', maxWidth: '380px', margin: '0 auto' }}>
-            {isWinner
-              ? 'You completed your commitment. Claim your original stake plus a share of the failed pool.'
-              : 'You did not meet the commitment criteria. Your stake was distributed to the winners.'}
+            {hasClaimed
+              ? 'This wallet has already claimed its reward for this commitment.'
+              : claimable
+              ? hasWinners
+                ? 'You completed your commitment. Claim your original stake plus a share of the failed pool.'
+                : 'No participant succeeded, so the contract returns your original stake.'
+              : 'You did not meet the commitment criteria. Your stake is distributed to the winners.'}
           </p>
         </div>
 
-        {/* Payout card */}
+        {/* Payout card — amounts derived from on-chain state */}
         <Card style={{ marginBottom: 'var(--space-6)' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-            <PayoutRow label="Your result" value={isWinner ? '✓ Success' : '✕ Failed'} success={isWinner} />
-            <PayoutRow label="Original stake" value={`${stake} MON`} />
-            {isWinner && (
+            <PayoutRow label="Your result" value={isWinner ? '✓ Success' : myResult === ParticipantResult.Failure ? '✕ Failed' : '— Pending'} success={isWinner} />
+            <PayoutRow label="Original stake" value={`${formatMon(stake)} MON`} />
+            {claimable && hasWinners && (
               <PayoutRow
                 label={`Bonus from ${failureCount} failed stake${failureCount !== 1 ? 's' : ''}`}
-                value={`+${rewardBonus.toFixed(4)} MON`}
+                value={`+${formatMon(failedPool / BigInt(successCount))} MON`}
                 positive
               />
             )}
             <PayoutRow
-              label="Total payout"
-              value={isWinner ? `${totalPayout.toFixed(4)} MON` : '0 MON'}
+              label={claimable ? 'Claimable payout' : 'Total payout'}
+              value={claimable ? `${formatMon(payout)} MON` : '0 MON'}
               highlight
               last
             />
@@ -103,35 +184,34 @@ export function ClaimReward({ commitmentId, onNavigate, onBack }: Props) {
         </Card>
 
         {/* Tx state or CTA */}
-        {txStatus !== 'idle' ? (
+        {tx.status !== 'idle' ? (
           <TransactionState
-            status={txStatus}
+            status={tx.status}
             title={
-              txStatus === 'success' ? `Reward claimed — +${totalPayout.toFixed(4)} MON` :
-              txStatus === 'error' ? 'Claim failed' :
+              tx.status === 'success' ? `Reward claimed — +${formatMon(payout)} MON` :
+              tx.status === 'error' ? 'Claim failed' :
               'Claiming reward…'
             }
             description={
-              txStatus === 'preparing' ? 'Preparing transaction…' :
-              txStatus === 'confirming' ? 'Waiting for wallet confirmation…' :
-              txStatus === 'pending' ? 'Transaction pending on Monad…' :
-              txStatus === 'success'
-                ? `${totalPayout.toFixed(4)} MON will be returned to your wallet once the contract is live.`
-                : 'Something went wrong. Please try again.'
+              tx.status === 'confirming' ? 'Confirm the transaction in your wallet.' :
+              tx.status === 'pending' ? 'Transaction pending on Monad Testnet…' :
+              tx.status === 'success' ? `${formatMon(payout)} MON has been sent to your wallet.` :
+              tx.error
             }
-            isMock
+            transactionHash={tx.hash}
+            explorerUrl={tx.explorerUrl}
             onDismiss={
-              txStatus === 'success'
+              tx.status === 'success'
                 ? () => onNavigate('landing')
-                : () => setTxStatus('idle')
+                : () => tx.reset()
             }
-            onRetry={handleClaim}
+            onRetry={tx.status === 'error' ? handleClaim : undefined}
           />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            {isWinner ? (
+            {claimable ? (
               <Button variant="primary" size="lg" fullWidth onClick={handleClaim}>
-                Claim {totalPayout.toFixed(4)} MON →
+                Claim {formatMon(payout)} MON →
               </Button>
             ) : (
               <Button variant="secondary" size="lg" fullWidth onClick={() => onNavigate('landing')}>
@@ -139,7 +219,9 @@ export function ClaimReward({ commitmentId, onNavigate, onBack }: Props) {
               </Button>
             )}
             <p style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', margin: 0 }}>
-              Mock transaction — no funds moved until contract integration
+              {claimable
+                ? 'Real on-chain transaction — the contract pays out directly to your wallet'
+                : 'Eligibility is read from the CommitPool contract'}
             </p>
           </div>
         )}

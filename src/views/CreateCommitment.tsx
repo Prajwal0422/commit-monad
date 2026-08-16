@@ -4,6 +4,14 @@ import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { Badge } from '../components/Badge';
 import { FormField, inputStyle, inputErrorStyle, inputFocusStyle } from '../components/FormField';
+import { TransactionState } from '../components/TransactionState';
+import { formatChallengeId, daysToDeadline, monToWei } from '../utils/contract';
+import {
+  useCommitPoolTransaction,
+  getCreatedChallengeId,
+  formatTxError,
+} from '../hooks/useCommitPool';
+import type { AppView } from '../App';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface FormState {
@@ -71,7 +79,13 @@ function validate(form: FormState, maxBalance: number): FormErrors {
 }
 
 // ─── Create Commitment view ───────────────────────────────────────────────────
-export function CreateCommitment({ onBack }: { onBack: () => void }) {
+export function CreateCommitment({
+  onBack,
+  onNavigate,
+}: {
+  onBack: () => void;
+  onNavigate: (view: AppView, commitmentId?: string) => void;
+}) {
   const { address, isConnected } = useAccount();
   const { data: balanceData, isLoading: balanceLoading } = useBalance({
     address,
@@ -139,7 +153,16 @@ export function CreateCommitment({ onBack }: { onBack: () => void }) {
 
   // ── Submitted / ready state ───────────────────────────────────────────────────
   if (submitted) {
-    return <ReadyState form={form} maxPool={maxPool} durationLabel={selectedDurationLabel} onBack={onBack} onReset={handleReset} />;
+    return (
+      <ReadyState
+        form={form}
+        maxPool={maxPool}
+        durationLabel={selectedDurationLabel}
+        onBack={onBack}
+        onReset={handleReset}
+        onNavigate={onNavigate}
+      />
+    );
   }
 
   // ── Form ─────────────────────────────────────────────────────────────────────
@@ -474,26 +497,56 @@ function PreviewRow({
   );
 }
 
-// ─── Ready / demo state ───────────────────────────────────────────────────────
+// ─── Ready / submit-to-chain state ───────────────────────────────────────────
 function ReadyState({
   form,
   maxPool,
   durationLabel,
   onBack,
   onReset,
+  onNavigate,
 }: {
   form: FormState;
   maxPool: number;
   durationLabel: string;
   onBack: () => void;
   onReset: () => void;
+  onNavigate: (view: AppView, commitmentId?: string) => void;
 }) {
+  const tx = useCommitPoolTransaction();
+
+  // Decode the new challenge ID from the receipt's ChallengeCreated event
+  const createdId = getCreatedChallengeId(tx.receipt);
+
+  function handleSubmitToChain() {
+    try {
+      const stakeWei = monToWei(form.stake);
+      const deadline = daysToDeadline(parseInt(form.duration, 10));
+      const maxParticipants = BigInt(parseInt(form.maxParticipants, 10));
+      // msg.value MUST equal stakeAmount exactly
+      void tx.send({
+        functionName: 'createChallenge',
+        args: [form.goal.trim(), stakeWei, deadline, maxParticipants],
+        value: stakeWei,
+      });
+    } catch (e) {
+      // monToWei throws on malformed input — validation should prevent this
+      console.error('Failed to prepare createChallenge:', formatTxError(e));
+    }
+  }
+
+  const txDescription =
+    tx.status === 'confirming' ? 'Confirm the transaction in your wallet.' :
+    tx.status === 'pending' ? 'Waiting for Monad Testnet to confirm your transaction…' :
+    tx.status === 'success' ? 'Your commitment is live on Monad Testnet.' :
+    tx.status === 'error' ? tx.error : undefined;
+
   return (
     <main style={{ padding: 'var(--space-10) 0 var(--space-20)' }}>
       <div className="container" style={{ maxWidth: '560px' }}>
 
         <button
-          onClick={onReset}
+          onClick={() => { tx.reset(); onReset(); }}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -540,8 +593,9 @@ function ReadyState({
             Ready to submit to Monad
           </h2>
           <p style={{ fontSize: '14px', marginBottom: 'var(--space-6)' }}>
-            Your commitment has been validated. Smart contract integration is
-            coming in the next phase — no funds have been moved.
+            Your commitment has been validated. Confirm the transaction below to
+            create it on the CommitPool contract — your stake is sent along
+            with the transaction.
           </p>
 
           {/* Summary */}
@@ -564,13 +618,57 @@ function ReadyState({
             <SummaryRow label="Network" value="Monad Testnet" />
           </div>
 
+          {/* Real transaction lifecycle */}
+          {tx.status !== 'idle' && (
+            <div style={{ marginBottom: 'var(--space-6)' }}>
+              <TransactionState
+                status={tx.status}
+                title={
+                  tx.status === 'success' ? 'Commitment created on-chain' :
+                  tx.status === 'error' ? 'Transaction failed' :
+                  'Creating commitment…'
+                }
+                description={txDescription}
+                transactionHash={tx.hash}
+                explorerUrl={tx.explorerUrl}
+                onRetry={tx.status === 'error' ? handleSubmitToChain : undefined}
+              />
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
-            <Button variant="primary" size="md" disabled>
-              Submit to Monad (coming soon)
-            </Button>
-            <Button variant="secondary" size="md" onClick={onBack}>
-              Back to Home
-            </Button>
+            {tx.status === 'success' ? (
+              <>
+                {createdId !== undefined && (
+                  <Button
+                    variant="primary"
+                    size="md"
+                    onClick={() => onNavigate('details', createdId.toString())}
+                  >
+                    View commitment {formatChallengeId(createdId)} →
+                  </Button>
+                )}
+                <Button variant="secondary" size="md" onClick={() => onNavigate('explore')}>
+                  Explore commitments
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="primary"
+                  size="md"
+                  disabled={tx.status === 'confirming' || tx.status === 'pending'}
+                  onClick={handleSubmitToChain}
+                >
+                  {tx.status === 'confirming' ? 'Confirm in wallet…' :
+                   tx.status === 'pending' ? 'Waiting for confirmation…' :
+                   'Submit to Monad'}
+                </Button>
+                <Button variant="secondary" size="md" onClick={onBack}>
+                  Back to Home
+                </Button>
+              </>
+            )}
           </div>
         </Card>
       </div>

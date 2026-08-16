@@ -19,9 +19,10 @@ export const monadTestnet = defineChain({
     },
   },
   blockExplorers: {
+    // Matches the deployment record (commitpool-contract/deployments/monadTestnet.json)
     default: {
-      name: 'Monad Explorer',
-      url: 'https://testnet.monadexplorer.com',
+      name: 'MonadVision',
+      url: 'https://testnet.monadvision.com',
     },
   },
   testnet: true,

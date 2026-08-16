@@ -1,7 +1,15 @@
-import { getCommitmentById } from '../data/mockCommitments';
 import { Card } from '../components/Card';
 import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
+import { TransactionState } from '../components/TransactionState';
+import {
+  useChallenge,
+  useChallengeParticipants,
+  useCommitPoolTransaction,
+} from '../hooks/useCommitPool';
+import { parseChallengeId, shortAddress, countResults } from '../utils/challenge';
+import { formatMon } from '../utils/contract';
+import { ChallengeStatus, ParticipantResult } from '../contracts/CommitPool';
 import type { AppView } from '../App';
 
 interface Props {
@@ -11,28 +19,142 @@ interface Props {
 }
 
 export function Resolution({ commitmentId, onNavigate, onBack }: Props) {
-  // Default to the resolved demo commitment if none provided
-  const commitment = getCommitmentById(commitmentId) ?? getCommitmentById('commit-resolved');
+  const challengeId = parseChallengeId(commitmentId);
 
-  if (!commitment) {
+  // ── Real contract reads ────────────────────────────────────────────────────
+  const { challenge, isLoading } = useChallenge(challengeId);
+  const { data: records } = useChallengeParticipants(challengeId, challenge?.participantList);
+
+  // ── Real resolve transaction ───────────────────────────────────────────────
+  const tx = useCommitPoolTransaction();
+
+  if (!challengeId || (!isLoading && !challenge)) {
     return (
       <main style={{ padding: 'var(--space-10) 0' }}>
         <div className="container">
           <BackButton onClick={onBack} />
-          <p style={{ color: 'var(--text-muted)' }}>Commitment not found.</p>
+          <p style={{ color: 'var(--text-muted)' }}>Commitment not found on-chain.</p>
         </div>
       </main>
     );
   }
 
-  const successCount = commitment.successCount ?? 2;
-  const failureCount = commitment.failureCount ?? 1;
-  const stake = commitment.stakePerParticipant;
-  const totalPool = commitment.pool;
-  const failedPool = failureCount * stake;
-  const rewardPerWinner = successCount > 0 ? (stake + failedPool / successCount) : stake;
-  const failedShare = rewardPerWinner - stake;
+  if (isLoading || !challenge) {
+    return (
+      <main style={{ padding: 'var(--space-10) 0' }}>
+        <div className="container">
+          <BackButton onClick={onBack} />
+          <p style={{ color: 'var(--text-muted)' }}>◌ Reading commitment from Monad Testnet…</p>
+        </div>
+      </main>
+    );
+  }
 
+  const isResolved = challenge.status === ChallengeStatus.Resolved;
+  const participantList = challenge.participantList;
+  const { successCount, failureCount, pendingCount } = countResults(records ?? {});
+
+  const stake = challenge.stakeAmount;
+  const failedPool = BigInt(failureCount) * stake;
+  // Contract payout logic: winners get stake + failedPool/successCount;
+  // with zero winners every participant can reclaim their original stake.
+  const payoutPerWinner = successCount > 0 ? stake + failedPool / BigInt(successCount) : stake;
+
+  function handleResolve() {
+    if (!challengeId) return;
+    void tx.send({ functionName: 'resolveChallenge', args: [challengeId] });
+  }
+
+  // ── Open challenge: resolve action ─────────────────────────────────────────
+  if (!isResolved) {
+    const canResolve = participantList.length >= 2 && pendingCount === 0;
+    return (
+      <main style={{ padding: 'var(--space-10) 0 var(--space-20)' }}>
+        <div className="container" style={{ maxWidth: '680px' }}>
+          <BackButton onClick={onBack} />
+
+          <div style={{ marginBottom: 'var(--space-8)', textAlign: 'center' }}>
+            <div
+              style={{
+                width: '56px', height: '56px', borderRadius: '50%',
+                background: 'var(--accent-dim)', border: '1px solid var(--accent)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                margin: '0 auto var(--space-5)', fontSize: '24px', color: 'var(--accent)',
+              }}
+              aria-hidden="true"
+            >
+              ◌
+            </div>
+            <Badge variant="warning" style={{ marginBottom: 'var(--space-4)' }}>
+              Awaiting resolution
+            </Badge>
+            <h1 style={{ fontSize: 'clamp(1.5rem, 3vw, 2rem)', marginBottom: 'var(--space-3)' }}>
+              Resolve this commitment
+            </h1>
+            <p style={{ fontSize: '15px', maxWidth: '460px', margin: '0 auto' }}>
+              {challenge.goal}
+            </p>
+          </div>
+
+          <Card style={{ marginBottom: 'var(--space-6)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+              <BreakdownRow label="Results submitted" value={`${successCount + failureCount} / ${participantList.length}`} />
+              <BreakdownRow label="Successful" value={String(successCount)} />
+              <BreakdownRow label="Failed" value={String(failureCount)} />
+              <BreakdownRow label="Pending" value={String(pendingCount)} last />
+            </div>
+          </Card>
+
+          {/* Resolve tx state */}
+          {tx.status !== 'idle' && (
+            <div style={{ marginBottom: 'var(--space-6)' }}>
+              <TransactionState
+                status={tx.status}
+                title={
+                  tx.status === 'success' ? 'Commitment resolved ✓' :
+                  tx.status === 'error' ? 'Resolution failed' :
+                  'Resolving commitment…'
+                }
+                description={
+                  tx.status === 'confirming' ? 'Confirm the transaction in your wallet.' :
+                  tx.status === 'pending' ? 'Transaction pending on Monad Testnet…' :
+                  tx.status === 'success' ? 'Rewards are now claimable by successful participants.' :
+                  tx.error
+                }
+                transactionHash={tx.hash}
+                explorerUrl={tx.explorerUrl}
+                onDismiss={() => tx.reset()}
+                onRetry={tx.status === 'error' ? handleResolve : undefined}
+              />
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <Button
+              variant="primary"
+              size="lg"
+              fullWidth
+              disabled={!canResolve || tx.status === 'confirming' || tx.status === 'pending'}
+              onClick={handleResolve}
+            >
+              {tx.status === 'confirming' ? 'Confirm in wallet…' :
+               tx.status === 'pending' ? 'Resolving…' :
+               'Resolve Challenge →'}
+            </Button>
+            {!canResolve && (
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', margin: 0 }}>
+                {participantList.length < 2
+                  ? 'At least 2 participants are required to resolve.'
+                  : `${pendingCount} result${pendingCount !== 1 ? 's' : ''} still pending — the verifier must submit all results first.`}
+              </p>
+            )}
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // ── Resolved challenge: outcome view ───────────────────────────────────────
   return (
     <main style={{ padding: 'var(--space-10) 0 var(--space-20)' }}>
       <div className="container" style={{ maxWidth: '680px' }}>
@@ -52,13 +174,13 @@ export function Resolution({ commitmentId, onNavigate, onBack }: Props) {
             ✓
           </div>
           <Badge variant="success" style={{ marginBottom: 'var(--space-4)' }}>
-            Resolved · Mock
+            Resolved · On-chain
           </Badge>
           <h1 style={{ fontSize: 'clamp(1.5rem, 3vw, 2rem)', marginBottom: 'var(--space-3)' }}>
             Commitment resolved
           </h1>
           <p style={{ fontSize: '15px', maxWidth: '420px', margin: '0 auto' }}>
-            {commitment.goal}
+            {challenge.goal}
           </p>
         </div>
 
@@ -104,10 +226,25 @@ export function Resolution({ commitmentId, onNavigate, onBack }: Props) {
             Reward breakdown
           </h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-            <BreakdownRow label="Total pool" value={`${totalPool} MON`} />
-            <BreakdownRow label="Original stake" value={`${stake} MON`} />
-            <BreakdownRow label={`Share from ${failureCount} failed stake${failureCount !== 1 ? 's' : ''}`} value={`+${failedShare.toFixed(4)} MON`} positive />
-            <BreakdownRow label="Reward per winner" value={`${rewardPerWinner.toFixed(4)} MON`} highlight last />
+            <BreakdownRow label="Total pool" value={`${formatMon(challenge.totalPool)} MON`} />
+            <BreakdownRow label="Original stake" value={`${formatMon(stake)} MON`} />
+            {successCount > 0 ? (
+              <>
+                <BreakdownRow
+                  label={`Share from ${failureCount} failed stake${failureCount !== 1 ? 's' : ''}`}
+                  value={`+${formatMon(successCount > 0 ? failedPool / BigInt(successCount) : 0n)} MON`}
+                  positive
+                />
+                <BreakdownRow label="Reward per winner" value={`${formatMon(payoutPerWinner)} MON`} highlight last />
+              </>
+            ) : (
+              <BreakdownRow
+                label="Outcome"
+                value="No winners — everyone reclaims their stake"
+                highlight
+                last
+              />
+            )}
           </div>
         </Card>
 
@@ -117,35 +254,42 @@ export function Resolution({ commitmentId, onNavigate, onBack }: Props) {
             Participants
           </h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-            {commitment.participants.map((p) => (
-              <div
-                key={p.address}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: 'var(--space-3) var(--space-4)',
-                  background: 'var(--surface-2)',
-                  borderRadius: 'var(--radius)',
-                  gap: 'var(--space-3)',
-                }}
-              >
-                <span style={{ fontSize: '13px', fontFamily: 'var(--font-mono)', color: 'var(--text)' }}>
-                  {p.shortAddress}
-                  {p.isCreator && <span style={{ marginLeft: '6px', fontSize: '10px', color: 'var(--accent)', fontWeight: 600 }}>CREATOR</span>}
-                </span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-                  {p.status === 'success' && (
-                    <span style={{ fontSize: '12px', color: 'var(--success)', fontWeight: 600 }}>
-                      +{rewardPerWinner.toFixed(4)} MON
-                    </span>
-                  )}
-                  <Badge variant={p.status === 'success' ? 'success' : 'danger'}>
-                    {p.status === 'success' ? 'Success' : 'Failed'}
-                  </Badge>
+            {participantList.map((addr) => {
+              const record = records?.[addr.toLowerCase()];
+              const result = record?.result ?? ParticipantResult.Pending;
+              const isCreator = addr.toLowerCase() === challenge.creator.toLowerCase();
+              const isSuccess = result === ParticipantResult.Success;
+              const isFailure = result === ParticipantResult.Failure;
+              return (
+                <div
+                  key={addr}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: 'var(--space-3) var(--space-4)',
+                    background: 'var(--surface-2)',
+                    borderRadius: 'var(--radius)',
+                    gap: 'var(--space-3)',
+                  }}
+                >
+                  <span style={{ fontSize: '13px', fontFamily: 'var(--font-mono)', color: 'var(--text)' }}>
+                    {shortAddress(addr)}
+                    {isCreator && <span style={{ marginLeft: '6px', fontSize: '10px', color: 'var(--accent)', fontWeight: 600 }}>CREATOR</span>}
+                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                    {(isSuccess || (successCount === 0 && result !== ParticipantResult.Failure)) && (
+                      <span style={{ fontSize: '12px', color: 'var(--success)', fontWeight: 600 }}>
+                        +{formatMon(payoutPerWinner)} MON claimable
+                      </span>
+                    )}
+                    <Badge variant={isSuccess ? 'success' : isFailure ? 'danger' : 'default'}>
+                      {isSuccess ? 'Success' : isFailure ? 'Failed' : 'Pending'}
+                    </Badge>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Card>
 

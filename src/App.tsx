@@ -4,6 +4,7 @@ import { Navbar } from './components/Navbar';
 import { Landing } from './views/Landing';
 import { CreateCommitment } from './views/CreateCommitment';
 import { ExploreCommitments } from './views/ExploreCommitments';
+import { MyCommitments } from './views/MyCommitments';
 import { CommitmentDetails } from './views/CommitmentDetails';
 import { SubmitResult } from './views/SubmitResult';
 import { Resolution } from './views/Resolution';
@@ -16,6 +17,7 @@ export type AppView =
   | 'landing'
   | 'create'
   | 'explore'
+  | 'my'
   | 'details'
   | 'submit-result'
   | 'resolution'
@@ -36,6 +38,7 @@ function App() {
     const backMap: Partial<Record<AppView, AppView>> = {
       create:         'landing',
       explore:        'landing',
+      my:             'landing',
       details:        'explore',
       'submit-result': 'details',
       resolution:     'details',
@@ -52,10 +55,13 @@ function App() {
           <Landing onNavigate={navigate} />
         )}
         {view === 'create' && (
-          <CreateCommitment onBack={goBack} />
+          <CreateCommitment onBack={goBack} onNavigate={navigate} />
         )}
         {view === 'explore' && (
           <ExploreCommitments onNavigate={navigate} />
+        )}
+        {view === 'my' && (
+          <MyCommitments onNavigate={navigate} onBack={goBack} />
         )}
         {view === 'details' && (
           <CommitmentDetails

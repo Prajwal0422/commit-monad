@@ -79,6 +79,8 @@ export function Navbar({ onNavigate, currentView }: NavbarProps) {
             display: 'flex',
             alignItems: 'center',
             gap: 'var(--space-1)',
+            flexWrap: 'wrap',
+            justifyContent: 'flex-end',
           }}
         >
           <NavButton
@@ -86,6 +88,12 @@ export function Navbar({ onNavigate, currentView }: NavbarProps) {
             onClick={() => onNavigate('explore')}
           >
             Explore
+          </NavButton>
+          <NavButton
+            active={currentView === 'my'}
+            onClick={() => onNavigate('my')}
+          >
+            My Commitments
           </NavButton>
           <NavButton
             active={currentView === 'landing'}

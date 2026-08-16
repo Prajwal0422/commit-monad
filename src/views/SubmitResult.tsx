@@ -1,10 +1,19 @@
 import { useState } from 'react';
-import { getCommitmentById } from '../data/mockCommitments';
+import { useAccount } from 'wagmi';
+import { type Address } from 'viem';
 import { Card } from '../components/Card';
 import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
 import { TransactionState } from '../components/TransactionState';
-import type { TxStatus } from '../components/TransactionState';
+import {
+  useChallenge,
+  useChallengeParticipants,
+  useIsVerifier,
+  useCommitPoolTransaction,
+} from '../hooks/useCommitPool';
+import { parseChallengeId, shortAddress } from '../utils/challenge';
+import { statusToResult } from '../utils/contract';
+import { ChallengeStatus, ParticipantResult } from '../contracts/CommitPool';
 import type { ParticipantStatus } from '../types/commitment';
 import type { AppView } from '../App';
 
@@ -15,45 +24,68 @@ interface Props {
 }
 
 export function SubmitResult({ commitmentId, onNavigate, onBack }: Props) {
-  const commitment = getCommitmentById(commitmentId);
+  const { isConnected } = useAccount();
+  const challengeId = parseChallengeId(commitmentId);
 
-  // Local result state keyed by address
-  // MOCK ONLY — replace with contract write when live
-  const [results, setResults] = useState<Record<string, ParticipantStatus>>(() => {
-    const init: Record<string, ParticipantStatus> = {};
-    commitment?.participants.forEach((p) => { init[p.address] = p.status; });
-    return init;
-  });
+  // ── Verifier gating — submitResult is verifier-only on-chain ──────────────
+  const { isVerifier, verifier } = useIsVerifier();
 
-  const [txStatus, setTxStatus] = useState<TxStatus>('idle');
+  // ── Real contract reads ────────────────────────────────────────────────────
+  const { challenge, isLoading } = useChallenge(challengeId);
+  const { data: records } = useChallengeParticipants(challengeId, challenge?.participantList);
 
-  if (!commitment) {
+  // Local choices for participants whose on-chain result is still PENDING
+  const [choices, setChoices] = useState<Record<string, 'success' | 'failure'>>({});
+  // Which address is currently being submitted (one tx at a time)
+  const [submitting, setSubmitting] = useState<Address | null>(null);
+
+  const tx = useCommitPoolTransaction();
+
+  if (!challengeId || (!isLoading && !challenge)) {
     return (
       <main style={{ padding: 'var(--space-10) 0' }}>
         <div className="container">
           <BackButton onClick={onBack} />
-          <p style={{ color: 'var(--text-muted)' }}>Commitment not found.</p>
+          <p style={{ color: 'var(--text-muted)' }}>Commitment not found on-chain.</p>
         </div>
       </main>
     );
   }
 
-  const submittedCount = Object.values(results).filter((r) => r !== 'pending').length;
-  const total = commitment.participants.length;
-  const allSet = submittedCount === total;
-
-  function setResult(address: string, status: ParticipantStatus) {
-    setResults((prev) => ({ ...prev, [address]: status }));
+  if (isLoading || !challenge) {
+    return (
+      <main style={{ padding: 'var(--space-10) 0' }}>
+        <div className="container">
+          <BackButton onClick={onBack} />
+          <p style={{ color: 'var(--text-muted)' }}>◌ Reading commitment from Monad Testnet…</p>
+        </div>
+      </main>
+    );
   }
 
-  // MOCK submit — replace with useWriteContract
-  function handleSubmit() {
-    setTxStatus('preparing');
-    setTimeout(() => setTxStatus('confirming'), 800);
-    setTimeout(() => setTxStatus('pending'), 1600);
-    setTimeout(() => {
-      setTxStatus('success');
-    }, 2800);
+  const participantList = challenge.participantList;
+  const isResolved = challenge.status === ChallengeStatus.Resolved;
+
+  // On-chain submitted count (result != PENDING)
+  const submittedCount = participantList.filter(
+    (addr) => (records?.[addr.toLowerCase()]?.result ?? 0) !== ParticipantResult.Pending,
+  ).length;
+  const total = participantList.length;
+  const allSet = submittedCount === total;
+
+  function handleSetResult(addr: Address, status: 'success' | 'failure') {
+    setChoices((prev) => ({ ...prev, [addr.toLowerCase()]: status }));
+  }
+
+  // Real submitResult() transaction — one participant per tx
+  function handleSubmit(addr: Address) {
+    const choice = choices[addr.toLowerCase()];
+    if (!choice || !challengeId) return;
+    setSubmitting(addr);
+    void tx.send({
+      functionName: 'submitResult',
+      args: [challengeId, addr, statusToResult(choice as ParticipantStatus)],
+    }).then(() => setSubmitting(null));
   }
 
   return (
@@ -64,26 +96,52 @@ export function SubmitResult({ commitmentId, onNavigate, onBack }: Props) {
         {/* Header */}
         <div style={{ marginBottom: 'var(--space-8)' }}>
           <Badge variant="warning" style={{ marginBottom: 'var(--space-3)' }}>
-            Verification · Mock
+            Verification · Verifier only
           </Badge>
           <h1 style={{ fontSize: 'clamp(1.5rem, 3vw, 2rem)', marginBottom: 'var(--space-2)' }}>
             Submit Results
           </h1>
           <p style={{ fontSize: '14px' }}>
-            Mark each participant as successful or failed.
+            Mark each participant as successful or failed. Each result is a real
+            on-chain transaction signed by the verifier wallet.
           </p>
         </div>
+
+        {/* Verifier gate */}
+        {!isConnected ? (
+          <Card style={{ marginBottom: 'var(--space-6)', borderColor: 'var(--warning)' }}>
+            <p style={{ fontSize: '14px', color: 'var(--warning)', margin: 0 }}>
+              Connect the verifier wallet to submit results.
+            </p>
+          </Card>
+        ) : !isVerifier ? (
+          <Card style={{ marginBottom: 'var(--space-6)', borderColor: 'var(--danger)' }}>
+            <p style={{ fontSize: '14px', color: 'var(--danger)', margin: 0 }}>
+              The connected wallet is not the contract verifier. Results can only
+              be submitted by{' '}
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{shortAddress(verifier)}</span>.
+            </p>
+          </Card>
+        ) : null}
+
+        {isResolved && (
+          <Card style={{ marginBottom: 'var(--space-6)' }}>
+            <p style={{ fontSize: '14px', margin: 0 }}>
+              This commitment is already resolved — no more results can be submitted.
+            </p>
+          </Card>
+        )}
 
         {/* Commitment info */}
         <Card style={{ marginBottom: 'var(--space-6)' }}>
           <div style={{ display: 'flex', gap: 'var(--space-4)', justifyContent: 'space-between', flexWrap: 'wrap' }}>
             <div>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 500, marginBottom: '4px' }}>Goal</div>
-              <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text)' }}>{commitment.goal}</div>
+              <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text)' }}>{challenge.goal}</div>
             </div>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 500, marginBottom: '4px' }}>Progress</div>
-              <div style={{ fontSize: '15px', fontWeight: 600, color: submittedCount === total ? 'var(--success)' : 'var(--text)' }}>
+              <div style={{ fontSize: '15px', fontWeight: 600, color: allSet ? 'var(--success)' : 'var(--text)' }}>
                 {submittedCount} / {total} submitted
               </div>
             </div>
@@ -91,61 +149,67 @@ export function SubmitResult({ commitmentId, onNavigate, onBack }: Props) {
         </Card>
 
         {/* Participant result rows */}
-        {txStatus === 'idle' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', marginBottom: 'var(--space-6)' }}>
-            {commitment.participants.map((p) => (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', marginBottom: 'var(--space-6)' }}>
+          {participantList.map((addr) => {
+            const record = records?.[addr.toLowerCase()];
+            const onChainResult = record?.result;
+            const isCreator = addr.toLowerCase() === challenge.creator.toLowerCase();
+            const isSet = onChainResult === ParticipantResult.Success || onChainResult === ParticipantResult.Failure;
+            const isSubmittingThis = submitting?.toLowerCase() === addr.toLowerCase();
+            return (
               <ResultRow
-                key={p.address}
-                shortAddress={p.shortAddress}
-                isCreator={p.isCreator}
-                status={results[p.address] ?? 'pending'}
-                onSet={(s) => setResult(p.address, s)}
+                key={addr}
+                shortAddress={shortAddress(addr)}
+                isCreator={isCreator}
+                status={
+                  isSet
+                    ? onChainResult === ParticipantResult.Success ? 'success' : 'failure'
+                    : choices[addr.toLowerCase()] ?? 'pending'
+                }
+                locked={isSet || !isVerifier || isResolved || (tx.status === 'confirming' || tx.status === 'pending')}
+                submitting={isSubmittingThis && (tx.status === 'confirming' || tx.status === 'pending')}
+                onSet={(s) => handleSetResult(addr, s)}
+                onSubmit={() => handleSubmit(addr)}
               />
-            ))}
+            );
+          })}
+        </div>
+
+        {/* Tx state for the active submission */}
+        {tx.status !== 'idle' && (
+          <div style={{ marginBottom: 'var(--space-6)' }}>
+            <TransactionState
+              status={tx.status}
+              title={
+                tx.status === 'success' ? 'Result submitted ✓' :
+                tx.status === 'error' ? 'Submission failed' :
+                'Submitting result…'
+              }
+              description={
+                tx.status === 'confirming' ? 'Confirm the transaction in your wallet.' :
+                tx.status === 'pending' ? 'Transaction pending on Monad Testnet…' :
+                tx.status === 'success' ? 'The result has been recorded on-chain.' :
+                tx.error
+              }
+              transactionHash={tx.hash}
+              explorerUrl={tx.explorerUrl}
+              onDismiss={() => tx.reset()}
+            />
           </div>
         )}
 
-        {/* Tx state */}
-        {txStatus !== 'idle' ? (
-          <TransactionState
-            status={txStatus}
-            title={
-              txStatus === 'success' ? 'Results submitted ✓' :
-              txStatus === 'error' ? 'Submission failed' :
-              'Submitting results…'
-            }
-            description={
-              txStatus === 'preparing' ? 'Preparing transaction…' :
-              txStatus === 'confirming' ? 'Waiting for wallet confirmation…' :
-              txStatus === 'pending' ? 'Transaction pending on Monad…' :
-              txStatus === 'success' ? 'Results have been recorded locally. Contract submission coming soon.' :
-              'Something went wrong.'
-            }
-            isMock
-            onDismiss={
-              txStatus === 'success'
-                ? () => onNavigate('resolution', commitmentId)
-                : () => setTxStatus('idle')
-            }
-            onRetry={handleSubmit}
-          />
-        ) : (
-          <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
-            <Button
-              variant="primary"
-              size="lg"
-              disabled={!allSet}
-              onClick={handleSubmit}
-            >
-              Submit Results →
+        {/* Bottom action */}
+        <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap', alignItems: 'center' }}>
+          {allSet ? (
+            <Button variant="primary" size="lg" onClick={() => onNavigate('resolution', commitmentId)}>
+              All results submitted — Resolve →
             </Button>
-            {!allSet && (
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)', alignSelf: 'center', margin: 0 }}>
-                Set all {total} results to continue.
-              </p>
-            )}
-          </div>
-        )}
+          ) : (
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+              Submit a result for every participant to enable resolution.
+            </p>
+          )}
+        </div>
       </div>
     </main>
   );
@@ -153,16 +217,23 @@ export function SubmitResult({ commitmentId, onNavigate, onBack }: Props) {
 
 // ── Result row ────────────────────────────────────────────────────────────────
 function ResultRow({
-  shortAddress,
+  shortAddress: short,
   isCreator,
   status,
+  locked,
+  submitting,
   onSet,
+  onSubmit,
 }: {
   shortAddress: string;
   isCreator: boolean;
   status: ParticipantStatus;
-  onSet: (s: ParticipantStatus) => void;
+  locked: boolean;
+  submitting: boolean;
+  onSet: (s: 'success' | 'failure') => void;
+  onSubmit: () => void;
 }) {
+  const hasChoice = status === 'success' || status === 'failure';
   return (
     <div
       style={{
@@ -188,11 +259,11 @@ function ResultRow({
           }}
           aria-hidden="true"
         >
-          {shortAddress.slice(2, 4).toUpperCase()}
+          {short.slice(2, 4).toUpperCase()}
         </div>
         <div>
           <span style={{ fontSize: '13px', fontWeight: 500, fontFamily: 'var(--font-mono)', color: 'var(--text)' }}>
-            {shortAddress}
+            {short}
           </span>
           {isCreator && (
             <span style={{ marginLeft: '6px', fontSize: '10px', color: 'var(--accent)', fontWeight: 600 }}>CREATOR</span>
@@ -200,13 +271,14 @@ function ResultRow({
         </div>
       </div>
 
-      {/* Toggle buttons */}
-      <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+      {/* Toggle buttons + submit */}
+      <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
         <ResultToggle
           label="Success"
           active={status === 'success'}
           activeColor="var(--success)"
           activeBg="var(--success-dim)"
+          disabled={locked}
           onClick={() => onSet('success')}
         />
         <ResultToggle
@@ -214,8 +286,23 @@ function ResultRow({
           active={status === 'failure'}
           activeColor="var(--danger)"
           activeBg="var(--danger-dim)"
+          disabled={locked}
           onClick={() => onSet('failure')}
         />
+        {locked && hasChoice ? (
+          <Badge variant={status === 'success' ? 'success' : 'danger'}>
+            {status === 'success' ? 'On-chain' : 'On-chain'}
+          </Badge>
+        ) : (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!hasChoice || locked || submitting}
+            onClick={onSubmit}
+          >
+            {submitting ? 'Submitting…' : 'Submit'}
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -226,18 +313,21 @@ function ResultToggle({
   active,
   activeColor,
   activeBg,
+  disabled,
   onClick,
 }: {
   label: string;
   active: boolean;
   activeColor: string;
   activeBg: string;
+  disabled: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
       aria-pressed={active}
+      disabled={disabled}
       style={{
         height: '34px',
         padding: '0 14px',
@@ -248,7 +338,8 @@ function ResultToggle({
         border: `1px solid ${active ? activeColor : 'var(--border)'}`,
         background: active ? activeBg : 'transparent',
         color: active ? activeColor : 'var(--text-muted)',
-        cursor: 'pointer',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled && !active ? 0.5 : 1,
         transition: 'all var(--transition)',
       }}
     >
