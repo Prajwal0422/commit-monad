@@ -1,0 +1,21 @@
+/* App-level layout styles */
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.main-content {
+  flex: 1;
+}
+
+/* Create commitment form: two-column on desktop, single on mobile */
+.create-form-grid {
+  grid-template-columns: minmax(0, 1fr) 320px;
+}
+
+@media (max-width: 768px) {
+  .create-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
