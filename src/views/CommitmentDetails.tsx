@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useAccount } from 'wagmi';
 import { Card } from '../components/Card';
 import { Badge } from '../components/Badge';
@@ -9,10 +10,11 @@ import {
   useParticipant,
   useSuccessCount,
   useCommitPoolTransaction,
+  useIsVerifier,
   explorerTxUrl,
 } from '../hooks/useCommitPool';
 import { useSessionActivity } from '../utils/sessionActivity';
-import { parseChallengeId, buildParticipants, challengeToCommitment, formatTimeRemaining, shortAddress } from '../utils/challenge';
+import { parseChallengeId, buildParticipants, challengeToCommitment, formatTimeRemaining, shortAddress, countResults } from '../utils/challenge';
 import { deadlineToDate, formatMon } from '../utils/contract';
 import { ChallengeStatus, ParticipantResult } from '../contracts/CommitPool';
 import type { Participant } from '../types/commitment';
@@ -41,6 +43,10 @@ export function CommitmentDetails({ commitmentId, onNavigate, onBack }: Props) {
 
   // ── Real join transaction ──────────────────────────────────────────────────
   const tx = useCommitPoolTransaction();
+  // Separate lifecycle for the creator's resolve transaction
+  const resolveTx = useCommitPoolTransaction();
+  // Result submission is verifier-authorized by the deployed contract
+  const { isVerifier } = useIsVerifier();
 
   if (!challengeId) {
     return (
@@ -108,6 +114,16 @@ export function CommitmentDetails({ commitmentId, onNavigate, onBack }: Props) {
       ? challenge.stakeAmount + failedPool / successCountBig
       : challenge.stakeAmount;
 
+  // Resolve eligibility — mirrors the contract's requirements: at least 2
+  // participants and every participant's result submitted (by the verifier).
+  const { pendingCount } = countResults(records ?? {});
+  const resultsLoaded = !!records && Object.keys(records).length > 0;
+  const canResolve =
+    !isResolved &&
+    challenge.participantCount >= 2n &&
+    resultsLoaded &&
+    pendingCount === 0;
+
   const joinDisabled =
     !isConnected || isFull || isResolved || deadlinePassed || isParticipant ||
     tx.status === 'confirming' || tx.status === 'pending';
@@ -119,6 +135,14 @@ export function CommitmentDetails({ commitmentId, onNavigate, onBack }: Props) {
       functionName: 'joinChallenge',
       args: [challengeId],
       value: challenge!.stakeAmount,
+    });
+  }
+
+  function handleResolve() {
+    if (!challengeId) return;
+    void resolveTx.send({
+      functionName: 'resolveChallenge',
+      args: [challengeId],
     });
   }
 
@@ -179,6 +203,9 @@ export function CommitmentDetails({ commitmentId, onNavigate, onBack }: Props) {
                 <DetailStat label="Time Left" value={formatTimeRemaining(commitment.deadline)} />
               </div>
             </Card>
+
+            {/* Invite participants */}
+            <InviteParticipants challengeId={challengeId} goal={commitment.goal} />
 
             {/* Participants card */}
             <Card>
@@ -276,6 +303,28 @@ export function CommitmentDetails({ commitmentId, onNavigate, onBack }: Props) {
                 onRetry={tx.status === 'error' ? handleJoin : undefined}
               />
             )}
+
+            {/* Resolve tx state — real transaction hash & explorer link */}
+            {resolveTx.status !== 'idle' && (
+              <TransactionState
+                status={resolveTx.status}
+                title={
+                  resolveTx.status === 'success' ? 'Commitment resolved!' :
+                  resolveTx.status === 'error' ? 'Failed to resolve' :
+                  'Resolving commitment…'
+                }
+                description={
+                  resolveTx.status === 'confirming' ? 'Confirm the transaction in your wallet.' :
+                  resolveTx.status === 'pending' ? 'Transaction pending on Monad Testnet…' :
+                  resolveTx.status === 'success' ? 'Results are now final on-chain.' :
+                  resolveTx.status === 'error' ? resolveTx.error : undefined
+                }
+                transactionHash={resolveTx.hash}
+                explorerUrl={resolveTx.explorerUrl}
+                onDismiss={() => resolveTx.reset()}
+                onRetry={resolveTx.status === 'error' ? handleResolve : undefined}
+              />
+            )}
           </div>
 
           {/* ── Right: your participation panel ── */}
@@ -284,6 +333,29 @@ export function CommitmentDetails({ commitmentId, onNavigate, onBack }: Props) {
               <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: 'var(--space-5)' }}>
                 Your Participation
               </h3>
+
+              {/* Connected wallet's role — derived from on-chain data */}
+              {isConnected && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 'var(--space-3)',
+                    padding: 'var(--space-3) var(--space-4)',
+                    background: 'var(--surface-2)',
+                    borderRadius: 'var(--radius)',
+                    marginBottom: 'var(--space-5)',
+                  }}
+                >
+                  <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)' }}>
+                    Your role
+                  </span>
+                  <Badge variant={isCreator ? 'accent' : isParticipant ? 'success' : 'default'}>
+                    {isCreator ? 'Creator' : isParticipant ? 'Participant' : 'Not participating'}
+                  </Badge>
+                </div>
+              )}
 
               {/* NOT JOINED */}
               {!isParticipant ? (
@@ -326,7 +398,7 @@ export function CommitmentDetails({ commitmentId, onNavigate, onBack }: Props) {
                   >
                     <span style={{ color: 'var(--success)', fontSize: '14px' }}>✓</span>
                     <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--success)' }}>
-                      Joined{isCreator ? ' · Creator' : ''}
+                      Joined
                     </span>
                   </div>
 
@@ -341,13 +413,21 @@ export function CommitmentDetails({ commitmentId, onNavigate, onBack }: Props) {
                     <>
                       <ActionRow label="Result" value="Pending" />
                       {!isResolved && (
-                        <Button
-                          variant="secondary"
-                          fullWidth
-                          onClick={() => onNavigate('submit-result', commitment.id)}
-                        >
-                          Submit Result →
-                        </Button>
+                        isVerifier ? (
+                          <Button
+                            variant="secondary"
+                            fullWidth
+                            onClick={() => onNavigate('submit-result', commitment.id)}
+                          >
+                            Submit Result →
+                          </Button>
+                        ) : (
+                          <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0, lineHeight: 1.6 }}>
+                            Result submission is verifier-authorized by the deployed contract —
+                            participants can't self-report. The verifier records your result
+                            on-chain once your outcome is verified.
+                          </p>
+                        )
                       )}
                     </>
                   ) : myResult === ParticipantResult.Success ? (
@@ -404,6 +484,54 @@ export function CommitmentDetails({ commitmentId, onNavigate, onBack }: Props) {
                     </>
                   )}
 
+                  {/* Creator finalize action — real resolveChallenge transaction */}
+                  {isCreator && !isResolved && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 'var(--space-3)',
+                        borderTop: '1px solid var(--border)',
+                        paddingTop: 'var(--space-4)',
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          letterSpacing: '0.08em',
+                          textTransform: 'uppercase',
+                          color: 'var(--text-muted)',
+                        }}
+                      >
+                        Finalize
+                      </div>
+                      <Button
+                        variant="primary"
+                        fullWidth
+                        disabled={
+                          !canResolve ||
+                          resolveTx.status === 'confirming' ||
+                          resolveTx.status === 'pending'
+                        }
+                        onClick={handleResolve}
+                      >
+                        {resolveTx.status === 'confirming' ? 'Confirm in wallet…' :
+                         resolveTx.status === 'pending' ? 'Resolving…' :
+                         'Finalize · Resolve on-chain'}
+                      </Button>
+                      <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0, lineHeight: 1.6, textAlign: 'center' }}>
+                        {!resultsLoaded
+                          ? 'Loading participant results…'
+                          : challenge.participantCount < 2n
+                          ? 'The contract requires at least 2 participants to resolve.'
+                          : pendingCount > 0
+                          ? `Waiting on results — ${pendingCount} participant${pendingCount === 1 ? '' : 's'} still pending (submitted by the verifier).`
+                          : 'All results are in — the contract permits resolution.'}
+                      </p>
+                    </div>
+                  )}
+
                   {isResolved && (
                     <Button
                       variant="secondary"
@@ -424,6 +552,91 @@ export function CommitmentDetails({ commitmentId, onNavigate, onBack }: Props) {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+/** Deployed frontend base URL used for shareable invite deep-links. */
+const INVITE_BASE_URL = 'https://commit-monad.vercel.app/';
+
+function InviteParticipants({ challengeId, goal }: { challengeId: bigint; goal: string }) {
+  const inviteUrl = `${INVITE_BASE_URL}?challenge=${challengeId.toString()}`;
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string>();
+
+  async function copyLink(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setCopied(true);
+      setError(undefined);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError('Could not copy automatically — please copy the link above manually.');
+    }
+  }
+
+  async function handleShare() {
+    // Native share sheet when available; clipboard fallback everywhere else
+    if (typeof navigator.share === 'function') {
+      try {
+        await navigator.share({
+          title: 'Join my commitment on Commit',
+          text: goal,
+          url: inviteUrl,
+        });
+        return;
+      } catch (e) {
+        // User dismissed the share sheet — don't force a copy in that case
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+      }
+    }
+    await copyLink();
+  }
+
+  return (
+    <Card>
+      <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: 'var(--space-2)' }}>
+        Invite Participants
+      </h2>
+      <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 var(--space-4)' }}>
+        Share this link — anyone who opens it lands directly on this commitment.
+      </p>
+
+      {/* Invite link display */}
+      <div
+        style={{
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'var(--surface-2)',
+          borderRadius: 'var(--radius)',
+          marginBottom: 'var(--space-4)',
+        }}
+      >
+        <code
+          style={{
+            fontSize: '12px',
+            fontFamily: 'var(--font-mono)',
+            color: 'var(--text-secondary)',
+            overflowWrap: 'anywhere',
+          }}
+        >
+          {inviteUrl}
+        </code>
+      </div>
+
+      <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+        <Button variant="secondary" onClick={() => void copyLink()}>
+          {copied ? 'Copied ✓' : 'Copy Invite Link'}
+        </Button>
+        <Button variant="primary" onClick={() => void handleShare()}>
+          Share
+        </Button>
+      </div>
+
+      {error && (
+        <p style={{ fontSize: '12px', color: 'var(--danger)', margin: 'var(--space-3) 0 0' }}>
+          {error}
+        </p>
+      )}
+    </Card>
+  );
+}
 
 function ParticipantRow({ participant }: { participant: Participant }) {
   return (

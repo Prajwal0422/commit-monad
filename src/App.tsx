@@ -23,10 +23,23 @@ export type AppView =
   | 'resolution'
   | 'claim';
 
+/**
+ * Deep-link support: a ?challenge=<id> query parameter opens that
+ * commitment's details directly on startup (used by invite links).
+ */
+function getInitialRoute(): { view: AppView; selectedId: string } {
+  const challenge = new URLSearchParams(window.location.search).get('challenge');
+  if (challenge && /^\d+$/.test(challenge)) {
+    return { view: 'details', selectedId: challenge };
+  }
+  return { view: 'landing', selectedId: '' };
+}
+
 function App() {
-  const [view, setView] = useState<AppView>('landing');
+  const [initialRoute] = useState(getInitialRoute);
+  const [view, setView] = useState<AppView>(initialRoute.view);
   // Selected commitment ID — passed through navigation for detail/flow screens
-  const [selectedId, setSelectedId] = useState<string>('');
+  const [selectedId, setSelectedId] = useState(initialRoute.selectedId);
 
   function navigate(nextView: AppView, commitmentId?: string) {
     if (commitmentId !== undefined) setSelectedId(commitmentId);
