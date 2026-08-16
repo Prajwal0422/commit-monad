@@ -1,6 +1,13 @@
+import React from 'react';
 import { WalletInfo } from './WalletInfo';
+import type { AppView } from '../App';
 
-export function Navbar() {
+interface NavbarProps {
+  onNavigate: (view: AppView) => void;
+  currentView: AppView;
+}
+
+export function Navbar({ onNavigate, currentView }: NavbarProps) {
   return (
     <header
       style={{
@@ -8,7 +15,7 @@ export function Navbar() {
         top: 0,
         zIndex: 100,
         borderBottom: '1px solid var(--border)',
-        background: 'rgba(10, 10, 15, 0.85)',
+        background: 'rgba(10, 10, 15, 0.88)',
         backdropFilter: 'blur(12px)',
         WebkitBackdropFilter: 'blur(12px)',
       }}
@@ -20,14 +27,22 @@ export function Navbar() {
           alignItems: 'center',
           justifyContent: 'space-between',
           height: '64px',
+          gap: 'var(--space-4)',
         }}
       >
-        {/* Wordmark */}
-        <div
+        {/* Wordmark — always goes home */}
+        <button
+          onClick={() => onNavigate('landing')}
+          aria-label="COMMIT home"
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: 'var(--space-2)',
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: 0,
+            flexShrink: 0,
           }}
         >
           <span
@@ -36,6 +51,7 @@ export function Navbar() {
               fontWeight: 700,
               letterSpacing: '-0.03em',
               color: 'var(--text)',
+              fontFamily: 'var(--font-sans)',
             }}
           >
             COMMIT
@@ -54,23 +70,33 @@ export function Navbar() {
           >
             Testnet
           </span>
-        </div>
+        </button>
 
-        {/* Nav links — shown on desktop */}
+        {/* Nav links */}
         <nav
           aria-label="Main navigation"
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 'var(--space-6)',
+            gap: 'var(--space-1)',
           }}
         >
-          <NavLink href="#commitments">Explore</NavLink>
-          <NavLink href="#how-it-works">How it works</NavLink>
+          <NavButton
+            active={currentView === 'explore'}
+            onClick={() => onNavigate('explore')}
+          >
+            Explore
+          </NavButton>
+          <NavButton
+            active={currentView === 'landing'}
+            onClick={() => onNavigate('landing')}
+          >
+            How it works
+          </NavButton>
         </nav>
 
         {/* Wallet */}
-        <div style={{ display: 'flex', alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
           <WalletInfo />
         </div>
       </div>
@@ -78,31 +104,38 @@ export function Navbar() {
   );
 }
 
-function NavLink({
-  href,
+function NavButton({
+  active,
+  onClick,
   children,
 }: {
-  href: string;
+  active: boolean;
+  onClick: () => void;
   children: React.ReactNode;
 }) {
   return (
-    <a
-      href={href}
+    <button
+      onClick={onClick}
       style={{
         fontSize: '14px',
         fontWeight: 500,
-        color: 'var(--text-secondary)',
-        textDecoration: 'none',
-        transition: 'color var(--transition)',
+        color: active ? 'var(--text)' : 'var(--text-secondary)',
+        background: active ? 'var(--surface-2)' : 'none',
+        border: 'none',
+        cursor: 'pointer',
+        padding: '6px 12px',
+        borderRadius: 'var(--radius-sm)',
+        fontFamily: 'var(--font-sans)',
+        transition: 'color var(--transition), background var(--transition)',
       }}
-      onMouseEnter={(e) =>
-        ((e.target as HTMLAnchorElement).style.color = 'var(--text)')
-      }
-      onMouseLeave={(e) =>
-        ((e.target as HTMLAnchorElement).style.color = 'var(--text-secondary)')
-      }
+      onMouseEnter={(e) => {
+        if (!active) e.currentTarget.style.color = 'var(--text)';
+      }}
+      onMouseLeave={(e) => {
+        if (!active) e.currentTarget.style.color = 'var(--text-secondary)';
+      }}
     >
       {children}
-    </a>
+    </button>
   );
 }

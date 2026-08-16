@@ -73,7 +73,7 @@ export function Landing({ onNavigate }: { onNavigate: (view: AppView) => void })
   return (
     <main>
       <HeroSection onNavigate={onNavigate} />
-      <CommitmentsSection />
+      <CommitmentsSection onNavigate={onNavigate} />
       <HowItWorksSection />
     </main>
   );
@@ -134,14 +134,15 @@ function HeroSection({ onNavigate }: { onNavigate: (view: AppView) => void }) {
         {/* Supporting text */}
         <p
           style={{
-            fontSize: 'clamp(1rem, 2vw, 1.2rem)',
-            maxWidth: '520px',
+            fontSize: 'clamp(1rem, 2vw, 1.15rem)',
+            maxWidth: '540px',
             margin: '0 auto var(--space-10)',
             color: 'var(--text-secondary)',
-            lineHeight: 1.7,
+            lineHeight: 1.75,
           }}
         >
-          Commit to a goal. Stake your funds. Prove yourself. Earn your reward.
+          Commit to a goal. Stake MON. Prove you did it.{' '}
+          Winners reclaim their stake and share the pool of those who didn't.
         </p>
 
         {/* CTAs */}
@@ -156,7 +157,7 @@ function HeroSection({ onNavigate }: { onNavigate: (view: AppView) => void }) {
           <Button size="lg" variant="primary" onClick={() => onNavigate('create')}>
             Create a Commitment
           </Button>
-          <Button size="lg" variant="secondary">
+          <Button size="lg" variant="secondary" onClick={() => onNavigate('explore')}>
             Explore Commitments
           </Button>
         </div>
@@ -207,7 +208,7 @@ function HeroSection({ onNavigate }: { onNavigate: (view: AppView) => void }) {
 }
 
 // ─── Active Commitments ───────────────────────────────────────────────────────
-function CommitmentsSection() {
+function CommitmentsSection({ onNavigate }: { onNavigate: (view: AppView) => void }) {
   return (
     <section
       id="commitments"
@@ -234,7 +235,7 @@ function CommitmentsSection() {
               These are static examples. Live data will be fetched from the contract.
             </p>
           </div>
-          <Button variant="ghost" size="sm">
+          <Button variant="ghost" size="sm" onClick={() => onNavigate('explore')}>
             View all →
           </Button>
         </div>
